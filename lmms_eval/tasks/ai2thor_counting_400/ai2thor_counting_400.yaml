@@ -1,0 +1,20 @@
+dataset_path: weikaih/ai2thor-counting-final-400
+task: "ai2thor_counting_400"
+test_split: train
+output_type: generate_until
+doc_to_visual: !function utils.counting_doc_to_visual
+doc_to_text: !function utils.counting_doc_to_text
+doc_to_target: "answer"
+process_results: !function utils.counting_process_results
+metric_list:
+  - metric: accuracy
+    aggregation: !function utils.counting_aggregate_results
+    higher_is_better: true
+generation_kwargs:
+  max_new_tokens: 128
+  temperature: 0.0
+  do_sample: false
+lmms_eval_specific_kwargs:
+  default:
+    post_prompt: "\nAnswer with the option's letter from the given choices directly."
+

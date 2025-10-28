@@ -1,0 +1,20 @@
+dataset_path: weikaih/ai2thor-perspective-qa-annotated-411-splits
+task: "ai2thor_perspective_411_relative_position_right_left"
+test_split: relative_position_right_left
+output_type: generate_until
+doc_to_visual: !function utils.perspective_doc_to_visual
+doc_to_text: !function utils.perspective_doc_to_text
+doc_to_target: "answer"
+process_results: !function utils.perspective_process_results
+metric_list:
+  - metric: accuracy
+    aggregation: !function utils.perspective_aggregate_results
+    higher_is_better: true
+generation_kwargs:
+  max_new_tokens: 128
+  temperature: 0.0
+  do_sample: false
+lmms_eval_specific_kwargs:
+  default:
+    post_prompt: "\nAnswer with the option's letter from the given choices directly."
+
