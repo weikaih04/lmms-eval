@@ -1,5 +1,6 @@
 import os
 import sys
+from functools import cache
 from pathlib import Path
 
 import yaml
@@ -30,6 +31,64 @@ with open(Path(__file__).parent / "mlvu_test.yaml", "r") as f:
             safe_data_test.append(line)
 cache_name_test = yaml.safe_load("".join(safe_data_test))["dataset_kwargs"]["cache_dir"]
 cache_dir_test = os.path.join(base_cache_dir, cache_name_test)
+
+
+@cache
+def _molmo2_mlvu_video_index(video_root):
+    """Index the already-migrated Molmo2 MLVU videos by basename."""
+    video_root = Path(video_root).expanduser().resolve()
+    if not video_root.is_dir():
+        raise FileNotFoundError(f"MLVU video root does not exist: {video_root}")
+    index = {}
+    for path in video_root.rglob("*.mp4"):
+        index.setdefault(path.name, []).append(str(path))
+    if not index:
+        raise FileNotFoundError(f"no MLVU .mp4 files under {video_root}")
+    return index
+
+
+def _molmo2_mlvu_video_root():
+    data_root = os.environ.get(
+        "MOLMO_DATA_DIR", "/fsx/home/weikai.huang/molmo2_codec_data"
+    )
+    return os.environ.get(
+        "MLVU_VIDEO_ROOT",
+        os.path.join(data_root, "video_datasets", "MVLU", "MLVU", "video"),
+    )
+
+
+def _resolve_molmo2_mlvu_video(doc):
+    video_root = _molmo2_mlvu_video_root()
+    candidates = _molmo2_mlvu_video_index(video_root).get(
+        os.path.basename(doc["video_name"]), []
+    )
+    if len(candidates) == 1:
+        return candidates[0]
+    task_type = str(doc.get("task_type", ""))
+    matching = [path for path in candidates if Path(path).parent.name == task_type]
+    if len(matching) == 1:
+        return matching[0]
+    return None
+
+
+def molmo2_mlvu_process_docs(dataset):
+    """Keep only annotations whose videos were migrated to this cluster."""
+    return dataset.filter(
+        lambda doc: _resolve_molmo2_mlvu_video(doc) is not None,
+        desc="Resolving migrated Molmo2 MLVU videos",
+    )
+
+
+def molmo2_mlvu_doc_to_visual_dev(doc):
+    """Resolve HF MLVU annotations against Molmo2's existing video tree."""
+    video_root = _molmo2_mlvu_video_root()
+    video_name = os.path.basename(doc["video_name"])
+    video_path = _resolve_molmo2_mlvu_video(doc)
+    if video_path is None:
+        raise FileNotFoundError(
+            f"MLVU video {video_name} is not present under {video_root}"
+        )
+    return [video_path]
 
 
 def mlvu_doc_to_visual_dev(doc):
@@ -85,7 +144,12 @@ def mlvu_process_results(doc, results):
     pred_ans = extract_characters_regex(pred)
 
     task_type = doc["task_type"]
-    data_dict = {"question_id": doc["question"], "task_type": task_type, "pred_answer": pred_ans, "answer": doc["answer"]}
+    data_dict = {
+        "question_id": doc["question"],
+        "task_type": task_type,
+        "pred_answer": pred_ans,
+        "answer": doc["answer"],
+    }
 
     return {"mlvu_percetion_score": data_dict}
 
@@ -97,7 +161,15 @@ def mlvu_aggregate_results_dev(results):
     Returns:
         A score
     """
-    TASK_TYPES = {"anomaly_reco", "count", "ego", "needle", "order", "plotQA", "topic_reasoning"}
+    TASK_TYPES = {
+        "anomaly_reco",
+        "count",
+        "ego",
+        "needle",
+        "order",
+        "plotQA",
+        "topic_reasoning",
+    }
     category2score = {}
     for task_type in TASK_TYPES:
         category2score[task_type] = {"correct": 0, "answered": 0}
@@ -105,7 +177,9 @@ def mlvu_aggregate_results_dev(results):
     for result in results:
         task_type = result["task_type"]
         category2score[task_type]["answered"] += 1
-        category2score[task_type]["correct"] += result["pred_answer"] == result["answer"]
+        category2score[task_type]["correct"] += (
+            result["pred_answer"] == result["answer"]
+        )
 
     task_category_scores = {}
 
@@ -127,7 +201,9 @@ def mlvu_aggregate_results_dev(results):
     else:
         average_accuracy = 0
 
-    eval_logger.info(f"Average Performance Across All Task Categories: {average_accuracy:.1f}%")
+    eval_logger.info(
+        f"Average Performance Across All Task Categories: {average_accuracy:.1f}%"
+    )
 
     return average_accuracy
 
@@ -139,7 +215,17 @@ def mlvu_aggregate_results_test(results):
     Returns:
         A score
     """
-    TASK_TYPES = {"anomaly_reco", "count", "ego", "needleQA", "order", "plotQA", "sportsQA", "topic_reasoning", "tutorialQA"}
+    TASK_TYPES = {
+        "anomaly_reco",
+        "count",
+        "ego",
+        "needleQA",
+        "order",
+        "plotQA",
+        "sportsQA",
+        "topic_reasoning",
+        "tutorialQA",
+    }
     category2score = {}
     for task_type in TASK_TYPES:
         category2score[task_type] = {"correct": 0, "answered": 0}
@@ -147,7 +233,9 @@ def mlvu_aggregate_results_test(results):
     for result in results:
         task_type = result["task_type"]
         category2score[task_type]["answered"] += 1
-        category2score[task_type]["correct"] += result["pred_answer"] == result["answer"]
+        category2score[task_type]["correct"] += (
+            result["pred_answer"] == result["answer"]
+        )
 
     task_category_scores = {}
 
@@ -169,6 +257,8 @@ def mlvu_aggregate_results_test(results):
     else:
         average_accuracy = 0
 
-    eval_logger.info(f"Average Performance Across All Task Categories: {average_accuracy:.1f}%")
+    eval_logger.info(
+        f"Average Performance Across All Task Categories: {average_accuracy:.1f}%"
+    )
 
     return average_accuracy

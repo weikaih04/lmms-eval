@@ -430,10 +430,10 @@ class Task(abc.ABC):
         if cache_requests and (not cached_instances or rewrite_requests_cache) and limit is not None:
             limit = None
 
-        doc_id_docs = utils.create_iterator(enumerate(self.eval_docs_no_media), rank=rank, limit=int(limit) if limit else None, world_size=world_size)
-        doc_iterator_for_counting = itertools.islice(range(len(self.test_docs())), rank, limit, world_size) if self.has_test_docs() else itertools.islice(range(len(self.validation_docs())), rank, limit, world_size)
-
-        num_docs = sum(1 for _ in doc_iterator_for_counting)
+        doc_id_docs = self.doc_iterator_no_media(
+            rank=rank, limit=limit, world_size=world_size
+        )
+        num_docs = self.eval_doc_count(rank=rank, limit=limit, world_size=world_size)
 
         for doc_id, doc in tqdm(
             doc_id_docs,
@@ -659,15 +659,64 @@ class Task(abc.ABC):
         else:
             raise ValueError(f"Task dataset (path={self.DATASET_PATH}, name={self.DATASET_NAME}) must have valid or test docs!")
 
-    def doc_iterator(self, *, rank: int = 0, limit: Union[int, None] = None, world_size: int = 1) -> Iterator[Tuple[int, Any]]:
-        limit = int(limit) if limit else None
-        doc_iterator = utils.create_iterator(
-            enumerate(self.eval_docs),
+    def _manifest_doc_ids(self) -> Optional[List[int]]:
+        """Return frozen task-native doc IDs when a selection manifest is set."""
+        manifest_path = os.getenv("LMMS_EVAL_DOC_ID_MANIFEST")
+        if not manifest_path:
+            return None
+        with open(manifest_path, "r", encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+        task_name = self.config.task
+        task_entry = manifest.get("tasks", {}).get(task_name)
+        if task_entry is None:
+            raise ValueError(f"Task {task_name!r} is absent from doc-id manifest {manifest_path}")
+        doc_ids = task_entry.get("doc_ids")
+        if not isinstance(doc_ids, list) or not all(isinstance(x, int) for x in doc_ids):
+            raise ValueError(f"Invalid doc_ids for task {task_name!r} in {manifest_path}")
+        if len(doc_ids) != len(set(doc_ids)):
+            raise ValueError(f"Duplicate doc_ids for task {task_name!r} in {manifest_path}")
+        expected_size = task_entry.get("full_size")
+        actual_size = len(self.eval_docs)
+        if expected_size is not None and actual_size != expected_size:
+            raise ValueError(f"Dataset size drift for {task_name!r}: manifest={expected_size}, actual={actual_size}")
+        if any(doc_id < 0 or doc_id >= actual_size for doc_id in doc_ids):
+            raise ValueError(f"Out-of-range doc_id for task {task_name!r} in {manifest_path}")
+        expected_sample_size = task_entry.get("sample_size")
+        if expected_sample_size is not None and len(doc_ids) != expected_sample_size:
+            raise ValueError(
+                f"Sample-size drift for {task_name!r}: manifest={expected_sample_size}, actual={len(doc_ids)}"
+            )
+        return doc_ids
+
+    def _doc_iterator_for(self, docs, *, rank: int, limit: Union[int, None], world_size: int):
+        selected_doc_ids = self._manifest_doc_ids()
+        raw_iterator = (
+            enumerate(docs)
+            if selected_doc_ids is None
+            else ((doc_id, docs[doc_id]) for doc_id in selected_doc_ids)
+        )
+        return utils.create_iterator(
+            raw_iterator,
             rank=int(rank),
-            limit=limit,
+            limit=int(limit) if limit else None,
             world_size=int(world_size),
         )
-        return doc_iterator
+
+    def eval_doc_count(self, *, rank: int = 0, limit: Union[int, None] = None, world_size: int = 1) -> int:
+        selected_doc_ids = self._manifest_doc_ids()
+        count = len(self.eval_docs) if selected_doc_ids is None else len(selected_doc_ids)
+        stop = min(count, int(limit)) if limit else count
+        return len(range(int(rank), stop, int(world_size)))
+
+    def doc_iterator(self, *, rank: int = 0, limit: Union[int, None] = None, world_size: int = 1) -> Iterator[Tuple[int, Any]]:
+        return self._doc_iterator_for(
+            self.eval_docs, rank=rank, limit=limit, world_size=world_size
+        )
+
+    def doc_iterator_no_media(self, *, rank: int = 0, limit: Union[int, None] = None, world_size: int = 1) -> Iterator[Tuple[int, Any]]:
+        return self._doc_iterator_for(
+            self.eval_docs_no_media, rank=rank, limit=limit, world_size=world_size
+        )
 
 
 class ConfigurableTask(Task):
