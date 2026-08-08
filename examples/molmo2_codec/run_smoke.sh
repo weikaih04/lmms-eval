@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${MOLMO2_CODEC_REPO:=/fsx/home/weikai.huang/molmo2_codec/mm_olmo}"
+: "${MOLMO2_CODEC_REPO:?set MOLMO2_CODEC_REPO to the Molmo2 codec training repository}"
 : "${MOLMO2_CODEC_PTOK:?set MOLMO2_CODEC_PTOK to the Stage-1 checkpoint}"
 : "${MOLMO2_CODEC_STAGE2:?set MOLMO2_CODEC_STAGE2 to a consolidated Stage-2 checkpoint}"
 : "${MOLMO2_CODEC_GAMMA:?set MOLMO2_CODEC_GAMMA to the fixed gamma artifact}"

@@ -1,16 +1,22 @@
 import inspect
 import dataclasses
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
-TRAINING_REPO = Path("/fsx/home/weikai.huang/molmo2_codec/mm_olmo")
-if str(TRAINING_REPO) not in sys.path:
+TRAINING_REPO_ENV = os.environ.get("MOLMO2_CODEC_REPO")
+TRAINING_REPO = Path(TRAINING_REPO_ENV) if TRAINING_REPO_ENV else None
+if TRAINING_REPO is not None and TRAINING_REPO.is_dir() and str(TRAINING_REPO) not in sys.path:
     sys.path.insert(0, str(TRAINING_REPO))
 
-from olmo.data.video_loader import FrameSampler, TimeSampler
+try:
+    from olmo.data.video_loader import FrameSampler, TimeSampler
+except ImportError:
+    FrameSampler = TimeSampler = None
 
 from lmms_eval.models.simple.molmo2_codec import (
     Molmo2Codec,
@@ -83,6 +89,7 @@ def _apply_supported_overrides(sampler, overrides):
     )
 
 
+@pytest.mark.skipif(TimeSampler is None, reason="Molmo2 training repository is unavailable")
 def test_full_span_contract_covers_short_and_long_time_sampled_videos():
     overrides = _codec_timeline_sampler_overrides(
         "full_span_2fps", max_frames=2048, base_fps=2.0
@@ -96,6 +103,7 @@ def test_full_span_contract_covers_short_and_long_time_sampled_videos():
     assert long_times[0] == 0.0 and long_times[-1] == 1800.0
 
 
+@pytest.mark.skipif(FrameSampler is None, reason="Molmo2 training repository is unavailable")
 def test_full_span_contract_covers_long_frame_sampled_videos():
     overrides = _codec_timeline_sampler_overrides(
         "full_span_2fps", max_frames=2048, base_fps=2.0

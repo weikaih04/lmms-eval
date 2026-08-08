@@ -1,4 +1,7 @@
+import pytest
+
 from lmms_eval.tasks.mlvu.utils import (
+    _molmo2_mlvu_video_root,
     _molmo2_mlvu_video_index,
     _resolve_molmo2_mlvu_video,
 )
@@ -30,3 +33,10 @@ def test_local_mlvu_resolver_uses_task_category(tmp_path, monkeypatch):
     assert _resolve_molmo2_mlvu_video(
         {"video_name": "sample.mp4", "task_type": "plotQA"}
     ) == str(tmp_path / "plotQA" / "sample.mp4")
+
+
+def test_local_mlvu_root_requires_an_explicit_portable_location(monkeypatch):
+    monkeypatch.delenv("MLVU_VIDEO_ROOT", raising=False)
+    monkeypatch.delenv("MOLMO_DATA_DIR", raising=False)
+    with pytest.raises(RuntimeError, match="MLVU_VIDEO_ROOT or MOLMO_DATA_DIR"):
+        _molmo2_mlvu_video_root()

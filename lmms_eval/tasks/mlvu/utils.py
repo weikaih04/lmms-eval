@@ -48,13 +48,16 @@ def _molmo2_mlvu_video_index(video_root):
 
 
 def _molmo2_mlvu_video_root():
-    data_root = os.environ.get(
-        "MOLMO_DATA_DIR", "/fsx/home/weikai.huang/molmo2_codec_data"
-    )
-    return os.environ.get(
-        "MLVU_VIDEO_ROOT",
-        os.path.join(data_root, "video_datasets", "MVLU", "MLVU", "video"),
-    )
+    explicit_root = os.environ.get("MLVU_VIDEO_ROOT")
+    if explicit_root:
+        return explicit_root
+    data_root = os.environ.get("MOLMO_DATA_DIR")
+    if not data_root:
+        raise RuntimeError(
+            "set MLVU_VIDEO_ROOT or MOLMO_DATA_DIR before running the local "
+            "Molmo2 MLVU task"
+        )
+    return os.path.join(data_root, "video_datasets", "MVLU", "MLVU", "video")
 
 
 def _resolve_molmo2_mlvu_video(doc):
