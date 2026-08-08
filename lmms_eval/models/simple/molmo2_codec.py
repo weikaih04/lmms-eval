@@ -122,17 +122,19 @@ def _codec_timeline_sampler_overrides(
             "frame_sample_mode": "fps",
             "candidate_sampling_fps": (float(base_fps),),
         }
-    if mode == "full_span_2fps":
+    if mode in {"full_span_1fps", "full_span_2fps"}:
+        sampling_fps = 1.0 if mode == "full_span_1fps" else float(base_fps)
         return {
             "max_frames": int(max_frames),
             "frame_sample_mode": "uniform_last_frame",
             # TimeSampler owns max_fps; FrameSampler owns min_fps. VideoLoader
             # applies only fields supported by its concrete sampler.
-            "max_fps": float(base_fps),
-            "min_fps": float(base_fps),
+            "max_fps": sampling_fps,
+            "min_fps": sampling_fps,
         }
     raise ValueError(
-        "timeline_sampling_mode must be full_span_2fps or prefix_2fps, "
+        "timeline_sampling_mode must be full_span_1fps, full_span_2fps, or "
+        "prefix_2fps, "
         f"got {mode!r}"
     )
 
@@ -369,6 +371,19 @@ class _Molmo2CodecRuntime:
             captured["video"] = str(video)
             captured["clip"] = clip
             if not captured.get("codec_active", False):
+                # Source-frame-aligned OV2 comparisons use the same full-span
+                # 1 FPS policy for native Dense and Codec inputs. Other modes
+                # preserve Molmo2's untouched native Dense loader.
+                if self.timeline_sampling_mode == "full_span_1fps":
+                    dense_kwargs = dict(kwargs)
+                    dense_kwargs.update(
+                        _codec_timeline_sampler_overrides(
+                            self.timeline_sampling_mode,
+                            max_frames=self.max_frames,
+                            base_fps=self.codec_config.base_fps,
+                        )
+                    )
+                    return original_load_video(video, clip, **dense_kwargs)
                 return original_load_video(video, clip, **kwargs)
 
             for cache_dir in self.gop_cache_read_dirs:

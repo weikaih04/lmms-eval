@@ -34,6 +34,27 @@ def test_full_span_timeline_uses_molmo_uniform_fallback_contract():
     }
 
 
+def test_ov2_aligned_timeline_uses_full_span_one_fps_contract():
+    assert _codec_timeline_sampler_overrides(
+        "full_span_1fps", max_frames=512, base_fps=2.0
+    ) == {
+        "max_frames": 512,
+        "frame_sample_mode": "uniform_last_frame",
+        "max_fps": 1.0,
+        "min_fps": 1.0,
+    }
+
+
+def test_ov2_aligned_timeline_caps_long_video_but_keeps_full_span():
+    overrides = _codec_timeline_sampler_overrides(
+        "full_span_1fps", max_frames=512, base_fps=2.0
+    )
+    sampler = _apply_supported_overrides(TimeSampler(), overrides)
+    _, times, _ = sampler(1800.0)
+    assert len(times) == 512
+    assert times[0] == 0.0 and times[-1] == 1800.0
+
+
 def test_prefix_timeline_remains_an_explicit_legacy_mode():
     assert _codec_timeline_sampler_overrides(
         "prefix_2fps", max_frames=2048, base_fps=2.0

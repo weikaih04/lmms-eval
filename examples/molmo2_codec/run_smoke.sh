@@ -16,6 +16,9 @@ set -euo pipefail
 : "${VIDEO_BACKEND:=codec}"
 : "${NUM_PROCESSES:=1}"
 : "${MAIN_PROCESS_PORT:=29500}"
+: "${SOURCE_FRAME_CAP:=384}"
+: "${TIMELINE_SAMPLING_MODE:=full_span_2fps}"
+: "${SEQ_LEN:=65536}"
 
 mkdir -p \
   "${MOLMO2_CODEC_CACHE}/gop_selected" \
@@ -29,7 +32,7 @@ fi
 
 "${launcher[@]}" \
   --model molmo2_codec \
-  --model_args "training_repo=${MOLMO2_CODEC_REPO},pretrained=${MOLMO2_CODEC_STAGE2},ptok_checkpoint=${MOLMO2_CODEC_PTOK},gamma_artifact=${MOLMO2_CODEC_GAMMA},video_backend=${VIDEO_BACKEND},p_variant=${MOLMO2_CODEC_P_VARIANT},visual_token_budget=8192,timeline_max_frames=2048,max_frames=101,seq_len=16384,gop_cache_dir=${MOLMO2_CODEC_CACHE}/gop_selected,gop_cache_read_dirs=${MOLMO2_CODEC_GOP_READ_DIRS},motion_cache_dir=${MOLMO2_CODEC_CACHE}/motion,motion_cache_read_dirs=${MOLMO2_CODEC_MOTION_READ_DIRS},feature_cache_dir=${MOLMO2_CODEC_CACHE}/features,trace_output=${TRACE_OUTPUT}" \
+  --model_args "training_repo=${MOLMO2_CODEC_REPO},pretrained=${MOLMO2_CODEC_STAGE2},ptok_checkpoint=${MOLMO2_CODEC_PTOK},gamma_artifact=${MOLMO2_CODEC_GAMMA},video_backend=${VIDEO_BACKEND},p_variant=${MOLMO2_CODEC_P_VARIANT},visual_token_budget=8192,timeline_max_frames=${SOURCE_FRAME_CAP},timeline_sampling_mode=${TIMELINE_SAMPLING_MODE},max_frames=${SOURCE_FRAME_CAP},seq_len=${SEQ_LEN},gop_cache_dir=${MOLMO2_CODEC_CACHE}/gop_selected,gop_cache_read_dirs=${MOLMO2_CODEC_GOP_READ_DIRS},motion_cache_dir=${MOLMO2_CODEC_CACHE}/motion,motion_cache_read_dirs=${MOLMO2_CODEC_MOTION_READ_DIRS},feature_cache_dir=${MOLMO2_CODEC_CACHE}/features,trace_output=${TRACE_OUTPUT}" \
   --tasks "${TASK}" \
   --batch_size 1 \
   --limit "${LIMIT}" \
