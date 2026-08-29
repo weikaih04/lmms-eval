@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from PIL import Image
 
 TRAINING_REPO_ENV = os.environ.get("MOLMO2_CODEC_REPO")
@@ -20,13 +21,62 @@ except ImportError:
 
 from lmms_eval.models.simple.molmo2_codec import (
     Molmo2Codec,
+    _Molmo2CodecRuntime,
     _codec_timeline_sampler_overrides,
+    _same_i_positions,
     _normalize_visuals,
     _ranked_trace_path,
     _select_foreign_visuals,
     _strip_lmms_placeholders,
     _visual_kind,
 )
+
+
+def test_native_p_dispatch_precedes_historical_ptokenizer_runtime():
+    source = inspect.getsource(_Molmo2CodecRuntime.__init__)
+    assert source.index("if self.native_p_mode") < source.index(
+        "CodecInferenceRuntime.from_checkpoints"
+    )
+    assert "_load_native_model" in source
+    assert "video_preprocessor.video_backend" in source
+    assert source.index("if self.native_p_mode") < source.index(
+        "ptok_checkpoint is required for the historical learned"
+    )
+
+
+def test_public_adapter_does_not_require_dummy_ptokenizer_for_native_mode():
+    source = inspect.getsource(Molmo2Codec.__init__)
+    assert 'raise ValueError("ptok_checkpoint is required")' not in source
+
+
+def test_model_batch_preserves_native_visual_contract_fields():
+    processed = {
+        "input_tokens": np.asarray([1, 2], dtype=np.int32),
+        "images": np.zeros((2, 3), dtype=np.float32),
+        "image_masks": np.ones((2,), dtype=np.bool_),
+        "token_pooling": np.asarray([0, 1], dtype=np.int32),
+        "low_res_token_pooling": np.asarray([1, 0], dtype=np.int32),
+    }
+    batch = _Molmo2CodecRuntime._make_batch(processed)
+    assert set(batch) == {
+        "input_ids",
+        "images",
+        "image_masks",
+        "token_pooling",
+        "low_res_token_pooling",
+    }
+    assert batch["input_ids"].dtype == torch.int64
+    assert batch["token_pooling"].dtype == torch.int64
+    assert batch["low_res_token_pooling"].dtype == torch.int64
+
+
+def test_drop_p_keeps_only_exact_i_positions():
+    assert _same_i_positions(("I", "P", "P", "I", "P")) == (0, 3)
+
+
+def test_drop_p_rejects_invalid_role_contract():
+    with pytest.raises(ValueError, match="start with an I-frame"):
+        _same_i_positions(("P", "I"))
 
 
 def test_full_span_timeline_uses_molmo_uniform_fallback_contract():

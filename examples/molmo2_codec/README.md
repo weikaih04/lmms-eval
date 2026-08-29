@@ -14,17 +14,26 @@ Long, and MLVU.
 
 ## Molmo2 Dense/Codec pair
 
-Set the three checkpoint paths and run one split:
+For the selected native Pruning-16 release, set the Stage-2 checkpoint and
+input contract, then run one split. No Stage-1 P-tokenizer is loaded:
 
 ```bash
 export MOLMO2_CODEC_REPO=/path/to/molmo2-codec/mm_olmo
-export MOLMO2_CODEC_PTOK=/path/to/ptokenizer.pt
 export MOLMO2_CODEC_STAGE2=/path/to/stage2-consolidated.pt
 export MOLMO2_CODEC_GAMMA=/path/to/gamma.json
+export CODEC_P_TOKENIZATION=pruning16
+export CODEC_MOTION_MODE=hex
+export CODEC_GOP_TARGET_P=4
+export CODEC_GOP_MAX_P=4
 
 SPLIT=long PROTOCOL=molmo384 \
   bash examples/molmo2_codec/run_paired_video.sh
 ```
+
+`MOLMO2_CODEC_PTOK` is required only when reproducing the historical learned-P
+path. Native Pruning-16 uses the frozen shared Molmo ViT, the independent
+native connector stored in Stage-2, and motion/residual saliency to retain 16
+of the 81 native cells.
 
 The launcher evaluates Dense and Codec with the same checkpoint, task-native
 document IDs, prompt, source-frame cap, and decoding settings.  Codec is capped

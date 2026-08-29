@@ -6,7 +6,6 @@ MANIFEST=${MANIFEST:-${ROOT}/examples/llava_onevision2_repro/manifests/VIDEO_QUA
 
 : "${SPLIT:?set SPLIT=short, medium, long, or mlvu}"
 : "${MOLMO2_CODEC_REPO:?set MOLMO2_CODEC_REPO to the Molmo2 codec training repository}"
-: "${MOLMO2_CODEC_PTOK:?set MOLMO2_CODEC_PTOK to the Stage-1 checkpoint}"
 : "${MOLMO2_CODEC_STAGE2:?set MOLMO2_CODEC_STAGE2 to a consolidated Stage-2 checkpoint}"
 : "${MOLMO2_CODEC_GAMMA:?set MOLMO2_CODEC_GAMMA to the fixed gamma artifact}"
 
@@ -44,10 +43,20 @@ case "${PROTOCOL}" in
   *) echo "unsupported PROTOCOL=${PROTOCOL}" >&2; exit 2 ;;
 esac
 
-for path in "${MANIFEST}" "${MOLMO2_CODEC_PTOK}" "${MOLMO2_CODEC_STAGE2}" "${MOLMO2_CODEC_GAMMA}"; do
+for path in "${MANIFEST}" "${MOLMO2_CODEC_STAGE2}" "${MOLMO2_CODEC_GAMMA}"; do
   test -s "${path}"
 done
 test -d "${MOLMO2_CODEC_REPO}"
+
+ptok_arg=
+case "${CODEC_P_TOKENIZATION:-learned}" in
+  pruning16|compression9) ;;
+  *)
+    : "${MOLMO2_CODEC_PTOK:?set MOLMO2_CODEC_PTOK for the historical learned-P path}"
+    test -s "${MOLMO2_CODEC_PTOK}"
+    ptok_arg=",ptok_checkpoint=${MOLMO2_CODEC_PTOK}"
+    ;;
+esac
 
 export LMMS_EVAL_DOC_ID_MANIFEST=${MANIFEST}
 export PYTHONPATH=${ROOT}:${MOLMO2_CODEC_REPO}${PYTHONPATH:+:${PYTHONPATH}}
@@ -62,7 +71,7 @@ for backend in "${backend_list[@]}"; do
   output=${OUTPUT_ROOT}/${SPLIT}/${backend}
   trace=${OUTPUT_ROOT}/${SPLIT}/${backend}_trace.jsonl
   mkdir -p "${output}"
-  model_args="training_repo=${MOLMO2_CODEC_REPO},pretrained=${MOLMO2_CODEC_STAGE2},ptok_checkpoint=${MOLMO2_CODEC_PTOK},gamma_artifact=${MOLMO2_CODEC_GAMMA},video_backend=${backend},p_variant=real,visual_token_budget=${VISUAL_TOKEN_BUDGET},timeline_max_frames=${FRAME_CAP},timeline_sampling_mode=${TIMELINE_MODE},max_frames=${FRAME_CAP},seq_len=${SEQ_LEN},gop_cache_dir=${CACHE_ROOT}/gop_selected,gop_cache_read_dirs=${CACHE_ROOT}/gop_selected,motion_cache_dir=${CACHE_ROOT}/motion,motion_cache_read_dirs=${CACHE_ROOT}/motion,feature_cache_dir=${CACHE_ROOT}/features,trace_output=${trace}"
+  model_args="training_repo=${MOLMO2_CODEC_REPO},pretrained=${MOLMO2_CODEC_STAGE2}${ptok_arg},gamma_artifact=${MOLMO2_CODEC_GAMMA},video_backend=${backend},p_variant=real,visual_token_budget=${VISUAL_TOKEN_BUDGET},timeline_max_frames=${FRAME_CAP},timeline_sampling_mode=${TIMELINE_MODE},max_frames=${FRAME_CAP},seq_len=${SEQ_LEN},gop_cache_dir=${CACHE_ROOT}/gop_selected,gop_cache_read_dirs=${CACHE_ROOT}/gop_selected,motion_cache_dir=${CACHE_ROOT}/motion,motion_cache_read_dirs=${CACHE_ROOT}/motion,feature_cache_dir=${CACHE_ROOT}/features,trace_output=${trace}"
 
   python -m accelerate.commands.launch \
     --num_processes "${NUM_PROCESSES}" \

@@ -139,6 +139,16 @@ def _codec_timeline_sampler_overrides(
     )
 
 
+def _same_i_positions(roles: Any) -> tuple[int, ...]:
+    """Return the exact I positions from an already selected codec timeline."""
+    roles = tuple(roles)
+    if not roles or roles[0] != "I":
+        raise ValueError("same-I/no-P roles must start with an I-frame")
+    if any(role not in {"I", "P"} for role in roles):
+        raise ValueError("same-I/no-P roles must contain only I/P")
+    return tuple(index for index, role in enumerate(roles) if role == "I")
+
+
 class _Molmo2CodecRuntime:
     """Long-lived native Molmo2 runtime used by the lmms-eval adapter."""
 
@@ -195,6 +205,11 @@ class _Molmo2CodecRuntime:
             store_eval_frozen_feature_cache,
         )
         from codec.codec_inference import CodecInferenceRuntime
+        from codec.native_p_tokenizer import (
+            NATIVE_P_TOKENIZATION_MODES,
+            configured_p_tokenization,
+            p_output_tokens,
+        )
         from codec.codec_preprocess import assign_roles
         from codec.codec_representation import (
             HP,
@@ -216,12 +231,13 @@ class _Molmo2CodecRuntime:
             )
         if p_variant not in {
             "real",
+            "drop_p",
             "zero_output",
             "shuffle_content",
             "foreign",
         }:
             raise ValueError(
-                "p_variant must be real, zero_output, shuffle_content, or "
+                "p_variant must be real, drop_p, zero_output, shuffle_content, or "
                 f"foreign; got {p_variant!r}"
             )
         self.training_repo = training_repo
@@ -242,6 +258,10 @@ class _Molmo2CodecRuntime:
         )
         self.max_frames = int(max_frames)
         self.seq_len = int(seq_len)
+        self.p_tokenization = configured_p_tokenization()
+        self.native_p_mode = (
+            self.p_tokenization in NATIVE_P_TOKENIZATION_MODES
+        )
         self._N_I = N_I
         self._VideoFrames = VideoFrames
         self._atomic_save = _atomic_save
@@ -317,21 +337,78 @@ class _Molmo2CodecRuntime:
         )
         self.config = config
 
+        gamma_artifact = resolve_gamma_artifact(gamma_artifact)
+        self.codec_config = with_gamma_artifact(ADACODEC, gamma_artifact)
+        self.ptok_checkpoint = (
+            os.path.abspath(os.path.expanduser(ptok_checkpoint))
+            if ptok_checkpoint
+            else ""
+        )
+        self.stage2_checkpoint = (
+            os.path.abspath(os.path.expanduser(stage2_checkpoint))
+            if stage2_checkpoint
+            else ""
+        )
+
+        # Native Pruning-16 / Compression-9 checkpoints contain a different
+        # visual branch from the historical learned P-tokenizer.  Reusing the
+        # feature-injection runtime below would silently load and evaluate the
+        # wrong branch.  Build the exact training-side native model and patched
+        # preprocessor instead; lmms-eval continues to own only task/prompt
+        # plumbing.
+        if self.native_p_mode:
+            if self.p_variant != "real":
+                raise ValueError(
+                    "native P lmms-eval currently supports only p_variant=real"
+                )
+            if not self.stage2_checkpoint:
+                raise ValueError(
+                    "native P lmms-eval requires a Stage-2 checkpoint"
+                )
+            from codec.codec_pipeline import install_codec_preprocessor_patches
+            from codec.native_p_eval import _load_native_model
+
+            install_codec_preprocessor_patches()
+            self.model, self.config = _load_native_model(
+                self.base_checkpoint,
+                self.stage2_checkpoint,
+                self.device,
+            )
+            self.n_p_tokens = p_output_tokens(self.p_tokenization)
+            self.tokenizer = self.config.build_tokenizer()
+            self.image_patch_token_id = self.tokenizer.image_patch_token_id
+            self.preprocessor = self.config.build_preprocessor(
+                for_inference=True,
+                is_training=False,
+                text_seq_len=None,
+                max_seq_len=self.seq_len,
+                include_image=False,
+            )
+            self.preprocessor.video_preprocessor.video_backend = (
+                "codec" if self.video_backend == "codec" else "native"
+            )
+            self._captured = {}
+            self._inject = {"features": None}
+            self.codec_runtime = None
+            eval_logger.info(
+                "Using training-identical native P path: {} / {}",
+                self.p_tokenization,
+                self.video_backend,
+            )
+            return
+
         eval_logger.info("Building native Molmo2 and loading 4B weights")
+        if not self.ptok_checkpoint:
+            raise ValueError(
+                "ptok_checkpoint is required for the historical learned "
+                "P-tokenizer path"
+            )
         with torch.device("meta"):
             model = config.build_model()
         model.to_empty(device=device)
         load_model_state(self.base_checkpoint, model)
         self.model = model.to(device).eval()
 
-        gamma_artifact = resolve_gamma_artifact(gamma_artifact)
-        self.codec_config = with_gamma_artifact(ADACODEC, gamma_artifact)
-        self.ptok_checkpoint = os.path.abspath(os.path.expanduser(ptok_checkpoint))
-        self.stage2_checkpoint = (
-            os.path.abspath(os.path.expanduser(stage2_checkpoint))
-            if stage2_checkpoint
-            else ""
-        )
         pool_index = torch.from_numpy(_pool_index_one_frame(HP, HP)).to(
             device=device, dtype=torch.long
         )
@@ -452,12 +529,35 @@ class _Molmo2CodecRuntime:
             fast_artifact = getattr(frames, "_molmo2_codec_artifact", None)
             if fast_artifact is not None:
                 roles, selected, u5, cache_path = fast_artifact
+                captured["gop_roles"] = tuple(roles)
+                captured["gop_source_indices"] = tuple(
+                    int(x) for x in selected
+                )
+                if self.p_variant == "drop_p":
+                    keep = np.asarray(_same_i_positions(roles), dtype=np.int64)
+                    roles = tuple(roles[index] for index in keep)
+                    selected = np.asarray(selected)[keep]
+                    u5 = np.asarray(u5)[keep]
+                    frames = self._VideoFrames(
+                        frames.frames[keep],
+                        np.asarray(frames.timestamps)[keep],
+                        frames.target_fps,
+                        frames.sampling_augmentation,
+                        subtitle=frames.subtitle,
+                    )
+                    frame_prefixes = [
+                        frame_prefixes[index] for index in keep
+                    ]
                 captured.update(
                     roles=tuple(roles),
                     source_indices=tuple(int(x) for x in selected),
                     u5=np.asarray(u5),
                     gop_cache_path=cache_path,
                     resized=None,
+                    input_timestamps=tuple(
+                        float(x) for x in np.asarray(frames.timestamps)
+                    ),
+                    input_frame_prefixes=tuple(str(x) for x in frame_prefixes),
                 )
                 return apply_placeholder_contract(
                     original_video_to_tokens(frames, frame_prefixes, is_training, rng)
@@ -523,6 +623,10 @@ class _Molmo2CodecRuntime:
                 selected,
                 self.codec_config,
             )
+            captured["gop_roles"] = selected_roles
+            captured["gop_source_indices"] = tuple(
+                int(x) for x in selected
+            )
             if self.gop_cache_dir:
                 cache_path = self._eval_selected_gop_cache_path(
                     self.gop_cache_dir,
@@ -543,6 +647,16 @@ class _Molmo2CodecRuntime:
                 )
                 captured["gop_cache_path"] = cache_path
 
+            if self.p_variant == "drop_p":
+                keep = np.asarray(
+                    _same_i_positions(selected_roles), dtype=np.int64
+                )
+                selected = selected[keep]
+                selected_roles = tuple(
+                    selected_roles[index] for index in keep
+                )
+                selected_u5 = selected_u5[keep]
+
             captured.update(
                 roles=selected_roles,
                 source_indices=tuple(int(x) for x in selected),
@@ -553,8 +667,14 @@ class _Molmo2CodecRuntime:
                     selected,
                     timeline_resized=timeline_resized,
                 ),
+                input_timestamps=tuple(
+                    float(x) for x in timeline_timestamps[selected]
+                ),
             )
             frame_prefixes = [frame_prefixes[index] for index in selected]
+            captured["input_frame_prefixes"] = tuple(
+                str(x) for x in frame_prefixes
+            )
             selected_frames = self._VideoFrames(
                 frames.frames[selected],
                 timeline_timestamps[selected],
@@ -592,23 +712,35 @@ class _Molmo2CodecRuntime:
 
     @staticmethod
     def _make_batch(processed: dict[str, Any]) -> dict[str, torch.Tensor]:
-        batch = {
-            "input_ids": torch.from_numpy(
-                np.asarray(processed["input_tokens"])[None]
-            ).long()
+        source_keys = {
+            "input_tokens": "input_ids",
+            "images": "images",
+            "image_masks": "image_masks",
+            "token_pooling": "token_pooling",
+            "low_res_token_pooling": "low_res_token_pooling",
         }
-        if processed.get("images") is not None:
-            batch["images"] = torch.from_numpy(np.asarray(processed["images"])[None])
-        if processed.get("token_pooling") is not None:
-            batch["token_pooling"] = torch.from_numpy(
-                np.asarray(processed["token_pooling"])[None]
-            ).long()
+        batch = {}
+        for source, destination in source_keys.items():
+            value = processed.get(source)
+            if value is None:
+                continue
+            tensor = torch.from_numpy(np.asarray(value)[None])
+            if destination in {
+                "input_ids",
+                "token_pooling",
+                "low_res_token_pooling",
+            }:
+                tensor = tensor.long()
+            batch[destination] = tensor
+        if "input_ids" not in batch:
+            raise ValueError("preprocessor emitted no input_tokens")
         return batch
 
     def _codec_features(self) -> tuple[torch.Tensor, list[int], Any]:
         captured = self._captured
         mode_by_variant = {
             "real": "codec",
+            "drop_p": "codec_drop_p",
             "zero_output": "codec_zero_output",
             "shuffle_content": "codec_shuffle_content",
             "foreign": "codec_foreign_content",
@@ -671,6 +803,27 @@ class _Molmo2CodecRuntime:
         processed = self.preprocessor(example)
         metadata = processed.get("metadata", {})
         trace_payload = None
+        if self.native_p_mode:
+            batch = {
+                key: value.to(self.device)
+                for key, value in self._make_batch(processed).items()
+            }
+            with torch.inference_mode(), torch.autocast(
+                "cuda", dtype=torch.bfloat16
+            ):
+                generated = self.model.generate(
+                    batch=batch,
+                    max_steps=int(max_new_tokens),
+                    is_distributed=False,
+                )
+            prediction = self.config.post_process(
+                batch, generated, [metadata]
+            )["predictions_text"][0]
+            return prediction, {
+                "native_p_tokenization": self.p_tokenization,
+                "video_backend": self.video_backend,
+                "video": os.fspath(visuals[0]) if kind == "video" else None,
+            }
         if self._captured["codec_active"]:
             if self.p_variant == "foreign":
                 if _visual_kind(foreign_visuals or []) != "video":
@@ -723,6 +876,16 @@ class _Molmo2CodecRuntime:
                 "codec": asdict(trace),
                 "video": self._captured.get("video"),
                 "source_indices": list(self._captured.get("source_indices", ())),
+                "gop_roles": list(self._captured.get("gop_roles", ())),
+                "gop_source_indices": list(
+                    self._captured.get("gop_source_indices", ())
+                ),
+                "input_timestamps": list(
+                    self._captured.get("input_timestamps", ())
+                ),
+                "input_frame_prefixes": list(
+                    self._captured.get("input_frame_prefixes", ())
+                ),
                 "gop_cache_path": self._captured.get("gop_cache_path"),
                 "p_variant": self.p_variant,
                 "foreign_donor_video": self._captured.get("foreign_donor_video"),
@@ -781,8 +944,6 @@ class Molmo2Codec(lmms):
             raise TypeError(f"unexpected model arguments: {sorted(kwargs)}")
         if int(batch_size) != 1:
             raise ValueError("molmo2_codec currently requires batch_size=1")
-        if not ptok_checkpoint:
-            raise ValueError("ptok_checkpoint is required")
         # Accept lmms-eval's conventional `pretrained=` spelling as the Stage-2
         # checkpoint while retaining an explicit, less ambiguous argument.
         if (
